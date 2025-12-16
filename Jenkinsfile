@@ -1,61 +1,67 @@
 /**
  * Jenkinsfile Declarativo para CI/CD de aplicação Node.js no OpenShift.
  * Utiliza o Dockerfile existente para construir e implantar a imagem.
- *
- * Requisito: O Jenkins precisa ter acesso aos plugins Docker Pipeline e OpenShift Pipeline.
- * Requisito: Os recursos básicos (DeploymentConfig/Service) da app (ex: 'meu-app-node') devem existir no OpenShift.
+ * * Configurado para o projeto OpenShift: 'teste'
  */
 
 pipeline {
-    agent any
+    // É recomendado usar um agente específico, como 'nodejs' ou 'maven', 
+    // que o OpenShift provisiona com as ferramentas necessárias (docker, oc).
+    agent any 
     
     // ========================================================================
     // VARIÁVEIS DE AMBIENTE
     // ========================================================================
     environment {
-        // Nome da sua aplicação e dos recursos no OpenShift
+        // Nome do seu projeto OpenShift
+        OPENSHIFT_PROJECT = 'teste' // <--- MODIFICADO para o nome do seu projeto!
+        
+        // Nome da sua aplicação e dos recursos no OpenShift (ImageStream, DC)
         APP_NAME = 'meu-app-node' 
         
         // Tag da imagem. Usa o número da build do Jenkins para exclusividade
         IMAGE_TAG = "latest-${env.BUILD_NUMBER}"
         
-        // Registro de Imagens (Endpoint interno do OpenShift ImageStream)
-        // O env.OPENSHIFT_PROJECT é injetado pelo OpenShift Build/Pipeline Hook
-        DOCKER_REGISTRY = "image-registry.openshift-image-registry.svc:5000/${env.OPENSHIFT_PROJECT}" 
+        // URL do Registro Interno do OpenShift (sem o projeto)
+        DOCKER_REGISTRY_URL = "image-registry.openshift-image-registry.svc:5000"
         
-        FULL_IMAGE_NAME = "${DOCKER_REGISTRY}/${APP_NAME}:${IMAGE_TAG}"
+        // Caminho completo da imagem: registry/project/app_name:tag
+        // Note que o DOCKER_REGISTRY_URL não é usado diretamente aqui, mas sim no withRegistry, 
+        // e o FULL_IMAGE_NAME é usado para o push.
+        FULL_IMAGE_NAME = "${DOCKER_REGISTRY_URL}/${OPENSHIFT_PROJECT}/${APP_NAME}:${IMAGE_TAG}"
     }
 
     stages {
+    
         // ====================================================================
         // ESTÁGIO 1: CHECKOUT
         // ====================================================================
-        stage('Checkout Code') {
+        stage('Checkout & Setup') {
             steps {
-                echo "Iniciando Pipeline de CI/CD para ${APP_NAME}"
-                // O Jenkins já faz o checkout automático do SCM.
-                // Aqui você poderia adicionar testes unitários, se houver.
+                echo "Iniciando Pipeline de CI/CD para ${APP_NAME} no projeto ${OPENSHIFT_PROJECT}"
             }
         }
 
         // ====================================================================
-        // ESTÁGIO 2: BUILD DA IMAGEM DOCKER
+        // ESTÁGIO 2: BUILD E PUSH DA IMAGEM DOCKER
         // ====================================================================
-        stage('Build Docker Image') {
+        stage('Build & Push Docker Image') {
             steps {
-                // Comando complexo Docker Pipeline DSL exige o bloco 'script'
                 script {
                     echo "Construindo Imagem Docker: ${FULL_IMAGE_NAME}"
                     
-                    // 1. Constrói a imagem Docker localmente usando o 'Dockerfile'
-                    // O ponto '.' indica que o Dockerfile e o contexto de build estão na raiz.
+                    // 1. Constrói a imagem Docker localmente no agente Jenkins
+                    // A tag usada localmente é APP_NAME:IMAGE_TAG
                     docker.build("${APP_NAME}:${IMAGE_TAG}", "-f Dockerfile .")
                     
                     // 2. Autentica e Registra a imagem no Registro Interno do OpenShift
-                    docker.withRegistry("https://${DOCKER_REGISTRY}", 'openshift-registry') {
-                        // Faz o push da tag para o ImageStream do OpenShift
-                        docker.image("${APP_NAME}:${IMAGE_TAG}").push()
-                        echo "Imagem ${APP_NAME}:${IMAGE_TAG} pushada com sucesso."
+                    // Usa a URL completa (com o projeto) e a credencial 'openshift-registry'
+                    // A credencial 'openshift-registry' deve ter sido configurada previamente no Jenkins.
+                    docker.withRegistry("https://${DOCKER_REGISTRY_URL}/${OPENSHIFT_PROJECT}", 'openshift-registry') {
+                        
+                        // Faz o push da tag para o ImageStream do OpenShift (ex: teste/meu-app-node:latest-N)
+                        docker.image("${APP_NAME}:${IMAGE_TAG}").push() 
+                        echo "Imagem ${APP_NAME}:${IMAGE_TAG} pushada com sucesso para o ImageStream."
                     }
                 }
             }
@@ -69,18 +75,21 @@ pipeline {
                 echo "Iniciando Implantação no OpenShift..."
                 
                 // Primeiro, taggeia a nova imagem no ImageStream do OpenShift como 'latest'
-                sh "oc tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:latest"
+                // Isso garante que o DeploymentConfig que monitora a tag 'latest' seja acionado.
+                // O comando 'oc' é executado no agente Jenkins.
+                sh "oc tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:latest -n ${OPENSHIFT_PROJECT}"
                 
-                // Comando complexo OpenShift Pipeline DSL exige o bloco 'script'
                 script {
                     // Força o DeploymentConfig a reconhecer a nova imagem taggeada (latest)
-                    openshift.withCluster() {
-                        openshift.withProject(env.OPENSHIFT_PROJECT) {
-                            echo "Disparando novo rollout para o DeploymentConfig: ${APP_NAME}"
-                            openshift.selector('dc', "${APP_NAME}").rollout().latest()
-                            echo "Deployment iniciado. Aguardando conclusão..."
-                            // Opcional: Adicionar um openshift.selector('dc', "${APP_NAME}").rollout().status() aqui se quiser aguardar
-                        }
+                    openshift.withProject(env.OPENSHIFT_PROJECT) {
+                        echo "Disparando novo rollout para o DeploymentConfig: ${APP_NAME}"
+                        // Dispara o novo rollout no DeploymentConfig
+                        openshift.selector('dc', "${APP_NAME}").rollout().latest()
+                        
+                        echo "Deployment iniciado. Aguardando conclusão..."
+                        // Opcional: espera que o rollout termine
+                        openshift.selector('dc', "${APP_NAME}").rollout().status('--watch=true')
+                        echo "Deployment concluído com sucesso!"
                     }
                 }
             }
@@ -95,7 +104,7 @@ pipeline {
             echo 'Pipeline concluída com SUCESSO! Aplicação atualizada.'
         }
         failure {
-            echo 'Pipeline FALHOU! Verifique os logs e o status do build.'
+            echo 'Pipeline FALHOU! Verifique os logs, o status do build e as credenciais.'
         }
     }
 }
