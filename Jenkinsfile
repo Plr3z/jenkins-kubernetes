@@ -45,3 +45,5 @@ pipeline {
     failure {
       echo "Pipeline FALHOU! Verifique o BuildConfig ${APP_NAME}"
     }
+  }
+}
