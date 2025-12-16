@@ -30,7 +30,7 @@ pipeline {
 
               echo "Build finalizado, iniciando rollout"
 
-              openshift.selector("dc", APP_NAME).rollout().latest()
+              openshift.selector("deployment", APP_NAME).rollout().latest()
             }
           }
         }
