@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     APP_NAME = "meu-app-node"
-    PROJECT  = "teste"
+    PROJECT  = "test"
   }
 
   stages {
